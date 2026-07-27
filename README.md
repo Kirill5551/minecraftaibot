@@ -18,11 +18,11 @@ This is a Minecraft ai helper bot that can make a lot of things.
 <br>Note: Base-3 **can't analize messages from minecraft chat and don't have chat**
 
 ###   Comparing Base-2 and Base-3
-**Base-2**
+###   Base-2
 - Simple: Not dashboard or terminal, Chat analizing.
 - Chat and commands: Can chat with players and smart analize chat.
 - Repeat command: Bot can't loop actions.
-**Base-3**
-- Private: Can select setted bot name
+###   Base-3
+- Private: You can select any bot name.
 - Dashboard: Completely Terminal that control bot.
 - Just write command: You don't need to send a lot of messages to set bot goal, just write needed action in Terminal and goal setted for 24/7.
