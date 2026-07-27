@@ -329,7 +329,7 @@ io.on('connection', (socket) => {
         while (isLooping && bot) {
             try {
                 if (command === 'mine') {
-                    const blockName = args[1].toLowerCase();
+                    const blockName = args.slice(1).join(' ').toLowerCase();
                     const blockType = mcData.blocksByName[blockName];
                     
                     if (!blockType) {
@@ -359,7 +359,7 @@ io.on('connection', (socket) => {
                     }
 
                 } else if (command === 'find') {
-                    const blockName = args[1].toLowerCase();
+                    const blockName = args.slice(1).join(' ').toLowerCase();
                     const blockType = mcData.blocksByName[blockName];
 
                     if (!blockType) {
@@ -402,7 +402,7 @@ io.on('connection', (socket) => {
                     break;
 
                 } else if (command === 'drop') {
-                    const itemName = args[1].toLowerCase();
+                    const itemName = args.slice(1).join(' ').toLowerCase();
                     const item = bot.inventory.items().find(it => it.name === itemName);
 
                     if (item) {
@@ -417,7 +417,7 @@ io.on('connection', (socket) => {
                     }
 
                 } else if (command === 'kill') {
-                    const mobName = args[1].toLowerCase();
+                    const mobName = args.slice(1).join(' ').toLowerCase();
                     const target = bot.nearestEntity((entity) => {
                         return entity.name && entity.name.toLowerCase() === mobName && entity.username !== bot.username && entity.isValid; 
                     });
