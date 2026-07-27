@@ -10,7 +10,7 @@ const http = require('http').createServer(app);
 const io = require('socket.io')(http);
 
 const PORT = 3000;
-let bot = null;
+let bots = []; // Массив для хранения всех запущенных ботов роя
 let manualDisconnect = false; 
 let isLooping = false; 
 let autoReconnectEnabled = true;
@@ -25,7 +25,7 @@ app.get('/', (req, res) => {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Mineflayer Console Dashboard</title>
+            <title>Mineflayer Swarm Dashboard</title>
             <script src="/socket.io/socket.io.js"></script>
             <style>
                 :root {
@@ -49,16 +49,17 @@ app.get('/', (req, res) => {
                     flex-direction: column;
                     align-items: center;
                 }
-                .container { width: 100%; max-width: 900px; display: flex; flex-direction: column; gap: 16px; }
+                .container { width: 100%; max-width: 950px; display: flex; flex-direction: column; gap: 16px; }
                 .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
                 .grid-flex { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
                 .input-group { display: flex; flex-direction: column; gap: 4px; flex-grow: 1; }
                 .input-group label { font-size: 0.7rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
-                input[type="text"], input[type="number"] { 
+                input[type="text"], input[type="number"], select { 
                     width: 100%; padding: 8px 12px; background: #0f172a; border: 1px solid var(--border); 
                     color: var(--text-main); border-radius: 6px; font-size: 0.9rem; transition: border-color 0.2s;
+                    height: 36px;
                 }
-                input:focus { border-color: var(--accent); outline: none; }
+                input:focus, select:focus { border-color: var(--accent); outline: none; }
                 .checkbox-group { display: flex; align-items: center; gap: 8px; height: 36px; user-select: none; cursor: pointer; color: var(--text-main); font-size: 0.9rem; }
                 button { 
                     padding: 8px 16px; background: var(--success); border: none; color: #fff; border-radius: 6px; 
@@ -82,50 +83,96 @@ app.get('/', (req, res) => {
             <div class="container">
                 <div class="card">
                     <div class="grid-flex">
+                        <div class="input-group" style="flex-grow: 1; max-width: 130px;">
+                            <label>Mode</label>
+                            <select id="mode" onchange="changeMode(this.value)">
+                                <option value="single">Single</option>
+                                <option value="multiple">Multiple</option>
+                            </select>
+                        </div>
                         <div class="input-group" style="flex-grow: 2;"><label>Server IP</label><input type="text" id="ip" value="localhost"></div>
-                        <div class="input-group" style="flex-grow: 1; max-width: 120px;"><label>Port</label><input type="number" id="port" value="25565"></div>
+                        <div class="input-group" style="flex-grow: 1; max-width: 100px;"><label>Port</label><input type="number" id="port" value="25565"></div>
                         <div class="input-group" style="flex-grow: 2;"><label>Bot Username</label><input type="text" id="username" value="WebBot"></div>
+                        
+                        <div class="input-group" id="count-group" style="display: none; flex-grow: 1; max-width: 100px;">
+                            <label>Bot Count</label>
+                            <input type="number" id="bot_count" value="3" min="1" max="100">
+                        </div>
+
                         <div class="checkbox-group">
                             <input type="checkbox" id="reconnect" checked onchange="toggleReconnect(this.checked)">
-                            <label for="reconnect" style="cursor:pointer; text-transform:none; font-size:0.9rem; color:var(--text-main);">Auto-reconnect</label>
+                            <label for="reconnect" style="cursor:pointer; font-size:0.9rem;">Auto-reconnect</label>
                         </div>
                     </div>
+                    <!-- Строка 3: Кнопки, Статус и новый Чекбокс Задержки -->
                     <div class="status-line">
                         <button class="btn-danger" onclick="disconnectBot()">Disconnect</button>
                         <button onclick="connectBot()">Connect</button>
+                        
+                        <div class="checkbox-group" id="delay-group" style="display: none; margin-left: 10px;">
+                            <input type="checkbox" id="delay_connect" checked>
+                            <label for="delay_connect" style="cursor:pointer; font-size:0.9rem; color:var(--text-main);">Delay (3000ms)</label>
+                        </div>
+
                         <div style="margin-left: auto;">Status: <span id="status" style="font-weight: 600; color: var(--danger);">Disconnected</span></div>
                     </div>
                 </div>
 
                 <div class="terminal-card">
                     <div id="chat">
-                        <div style="color: var(--text-muted);">=== Mineflayer Interactive CLI Terminal ===</div>
+                        <div style="color: var(--text-muted);">=== Mineflayer Swarm Interactive CLI Terminal ===</div>
                         <div style="color: var(--text-muted);">Type "help" to see available commands and usage.</div>
                     </div>
                     <div class="terminal-input-row">
                         <span class="terminal-prefix">&gt;</span>
-                        <input type="text" id="cmd" placeholder="Enter command..." autocomplete="off">
+                        <input type="text" id="cmd" placeholder="Enter command for swarm..." autocomplete="off">
                     </div>
                 </div>
             </div>
 
             <script>
                 const socket = io();
-                
                 const cmdHistory = [];
                 let historyIndex = -1;
 
+                function changeMode(mode) {
+                    const usernameInput = document.getElementById('username');
+                    const countGroup = document.getElementById('count-group');
+                    const delayGroup = document.getElementById('delay-group');
+                    let currentName = usernameInput.value;
+
+                    if (mode === 'single') {
+                        countGroup.style.display = 'none';
+                        delayGroup.style.display = 'none';
+                        if (currentName.includes('{index}')) {
+                            usernameInput.value = currentName.replace('{index}', '').trim();
+                        }
+                        printToTerminal('info', '[System] Switched to Single.');
+                    } else if (mode === 'multiple') {
+                        countGroup.style.display = 'flex';
+                        delayGroup.style.display = 'flex';
+                        if (!currentName.includes('{index}')) {
+                            usernameInput.value = currentName + '{index}';
+                        }
+                        printToTerminal('info', '[System] Switched to Multiple.');
+                    }
+                }
+
                 function connectBot() {
+                    const mode = document.getElementById('mode').value;
                     const ip = document.getElementById('ip').value;
                     const port = parseInt(document.getElementById('port').value);
                     const username = document.getElementById('username').value;
-                    socket.emit('bot_connect', { ip, port, username });
+                    const count = parseInt(document.getElementById('bot_count').value) || 1;
+                    const delayEnabled = document.getElementById('delay_connect').checked;
+
+                    socket.emit('bot_connect', { mode, ip, port, username, count, delayEnabled });
                 }
+
                 function disconnectBot() { socket.emit('bot_disconnect'); }
                 function toggleReconnect(val) { socket.emit('toggle_reconnect', val); }
 
                 const cmdInput = document.getElementById('cmd');
-
                 cmdInput.addEventListener('keydown', function(e) {
                     if (e.key === 'Enter') {
                         const val = this.value.trim();
@@ -142,8 +189,6 @@ app.get('/', (req, res) => {
                             historyIndex--;
                             this.value = cmdHistory[historyIndex];
                             setTimeout(() => this.setSelectionRange(this.value.length, this.value.length), 0);
-                        } else if (historyIndex === 0) {
-                            this.value = cmdHistory[0];
                         }
                         e.preventDefault();
                     } else if (e.key === 'ArrowDown') {
@@ -158,37 +203,26 @@ app.get('/', (req, res) => {
                     }
                 });
 
+                function printToTerminal(type, msg) {
+                    const chatDiv = document.getElementById('chat');
+                    let style = 'color: #ffffff;';
+                    if (type === 'error') style = 'color: var(--danger); font-weight:600;';
+                    else if (type === 'help') style = 'color: #e2e8f0; font-style: italic;';
+                    else if (type === 'cmd') style = 'color: #ffffff; font-weight: 500;';
+                    chatDiv.innerHTML += '<div style="' + style + '">' + msg + '</div>';
+                    chatDiv.scrollTop = chatDiv.scrollHeight;
+                }
+
                 socket.on('status', data => {
                     const text = document.getElementById('status');
                     text.innerText = data.text;
-                    if (data.connected) {
-                        text.style.color = 'var(--success)';
-                    } else if (data.text.includes('Reconnect') || data.text.includes('Connecting')) {
-                        text.style.color = '#ff9800';
-                    } else {
-                        text.style.color = 'var(--danger)';
-                    }
+                    if (data.connected) text.style.color = 'var(--success)';
+                    else if (data.text.includes('Reconnect') || data.text.includes('Connecting')) text.style.color = '#ff9800';
+                    else text.style.color = 'var(--danger)';
                 });
                 
                 socket.on('terminal_log', data => {
-                    const chatDiv = document.getElementById('chat');
-                    let style = '';
-                    if (data.type === 'error') {
-                        style = 'color: var(--danger); font-weight:600;';
-                    } else if (data.type === 'help') {
-                        style = 'color: #e2e8f0; font-style: italic;';
-                    } else if (data.type === 'cmd') {
-                        style = 'color: #ffffff; font-weight: 500;';
-                    } else {
-                        style = 'color: #ffffff;';
-                    }
-                    
-                    chatDiv.innerHTML += '<div style="' + style + '">' + data.message + '</div>';
-                    chatDiv.scrollTop = chatDiv.scrollHeight;
-                });
-
-                socket.on('disable_reconnect_checkbox', () => {
-                    document.getElementById('reconnect').checked = false;
+                    printToTerminal(data.type, data.message);
                 });
             </script>
         </body>
@@ -196,91 +230,128 @@ app.get('/', (req, res) => {
     `);
 });
 let countdownInterval = null; 
-let actionAttempts = 0; // Счетчик попыток выполнения действия в игре
-let currentActiveCommand = null; // Хранение текущей запущенной команды для повторов
+let actionAttempts = 0; 
+let currentActiveCommand = null; 
+let connectionConfig = null; 
 
 process.on('uncaughtException', (err) => {
     console.error('Intercepted crash:', err);
     isLooping = false;
-    if (bot) {
-        if (bot.pathfinder) bot.pathfinder.setGoal(null);
-        io.emit('terminal_log', { type: 'error', message: `[Critical Error] Intercepted crash: ${err.message || 'Block interaction failed.'}` });
-        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-    }
+    bots.forEach(b => { if (b && b.pathfinder) b.pathfinder.setGoal(null); });
+    io.emit('terminal_log', { type: 'error', message: `[Critical Error] Intercepted crash: ${err.message || 'Block interaction failed.'}` });
+    io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
 });
 
-function startBotInstance(data, socket) {
-    if (bot) return;
-    
+// Каскадная функция запуска ботов (учитывает статус чекбокса Delay)
+async function startSwarm(data, socket) {
+    if (bots.length > 0) return;
     manualDisconnect = false;
+    connectionConfig = data;
+
+    if (data.mode === 'multiple' && !data.username.includes('{index}')) {
+        io.emit('terminal_log', { type: 'error', message: '[Error] You need add {index} tag to bot name if you run in multiple mode.' });
+        io.emit('status', { connected: false, text: 'Disconnected' });
+        return;
+    }
+
     io.emit('status', { connected: false, text: 'Connecting...' });
+    const count = data.mode === 'single' ? 1 : data.count;
 
-    bot = mineflayer.createBot({
-        host: data.ip,
-        port: data.port,
-        username: data.username
-    });
+    for (let i = 0; i < count; i++) {
+        if (manualDisconnect) break;
 
-    bot.loadPlugin(collectBlock);
-    bot.loadPlugin(pathfinder);
+        const currentName = data.mode === 'single' 
+            ? data.username 
+            : data.username.replace('{index}', (i + 1));
 
-    bot.on('spawn', () => {
-        reconnectAttempts = 0; 
-        io.emit('status', { connected: true, text: 'Connected' });
-        io.emit('terminal_log', { type: 'info', message: '[System] Bot successfully joined the server.' });
-    });
-
-    bot.on('end', () => {
-        bot = null;
-        isLooping = false;
+        io.emit('terminal_log', { type: 'info', message: `[System] Spawning bot: ${currentName}...` });
         
+        const newBot = mineflayer.createBot({
+            host: data.ip,
+            port: data.port,
+            username: currentName
+        });
+
+        newBot.loadPlugin(collectBlock);
+        newBot.loadPlugin(pathfinder);
+
+        const spawnPromise = new Promise((resolve) => {
+            newBot.once('spawn', () => {
+                io.emit('terminal_log', { type: 'info', message: `[System] Bot ${currentName} successfully joined.` });
+                resolve(true);
+            });
+        });
+
+        setupBotEvents(newBot, data, socket, i === 0);
+        bots.push(newBot);
+
+        await spawnPromise;
+
+        // Делаем паузу, только если ботов больше одного И включен чекбокс Delay
+        if (count > 1 && i < count - 1 && data.delayEnabled && !manualDisconnect) {
+            io.emit('terminal_log', { type: 'info', message: `[System] Waiting 3000ms before next spawn...` });
+            await sleep(3000);
+        }
+    }
+
+    io.emit('status', { connected: true, text: 'Connected' });
+}
+
+function setupBotEvents(targetBot, data, socket, isFirstBot) {
+    targetBot.on('end', () => {
+        bots = bots.filter(b => b.username !== targetBot.username);
+        isLooping = false;
+
         if (manualDisconnect) {
-            io.emit('status', { connected: false, text: 'Disconnected' });
-            io.emit('terminal_log', { type: 'info', message: '[System] Bot disconnected.' });
+            if (bots.length === 0) {
+                io.emit('status', { connected: false, text: 'Disconnected' });
+                io.emit('terminal_log', { type: 'info', message: '[System] All bots disconnected.' });
+            }
             return;
         }
 
-        if (autoReconnectEnabled) {
+        if (isFirstBot && autoReconnectEnabled) {
+            bots.forEach(b => b.quit());
+            bots = [];
+
             reconnectAttempts++;
             io.emit('terminal_log', { type: 'info', message: `[System] Connection lost. Reconnect attempt #${reconnectAttempts} of 5...` });
 
             if (reconnectAttempts >= 5) {
-                reconnectAttempts = 0; 
+                reconnectAttempts = 0;
                 io.emit('status', { connected: false, text: 'Disconnected' });
                 io.emit('terminal_log', { type: 'error', message: '[Error] Failed to reconnect with 5 attempts!' });
             } else {
                 let timeLeft = 5;
                 io.emit('status', { connected: false, text: `Reconnect in ${timeLeft} seconds` });
-
                 if (countdownInterval) clearInterval(countdownInterval);
 
                 countdownInterval = setInterval(() => {
                     timeLeft--;
-                    if (timeLeft > 0 && autoReconnectEnabled && !manualDisconnect && !bot) {
+                    if (timeLeft > 0 && autoReconnectEnabled && !manualDisconnect && bots.length === 0) {
                         io.emit('status', { connected: false, text: `Reconnect in ${timeLeft} seconds` });
                     } else {
                         clearInterval(countdownInterval);
                         countdownInterval = null;
-                        if (autoReconnectEnabled && !manualDisconnect && !bot) {
-                            startBotInstance(data, socket);
+                        if (autoReconnectEnabled && !manualDisconnect && bots.length === 0) {
+                            startSwarm(connectionConfig, socket);
                         }
                     }
                 }, 1000);
             }
-        } else {
+        } else if (bots.length === 0) {
             io.emit('status', { connected: false, text: 'Disconnected' });
-            io.emit('terminal_log', { type: 'info', message: '[System] Connection closed. Auto-reconnect is disabled.' });
         }
     });
 
-    bot.on('error', (err) => {
-        console.log('Bot Error:', err.message);
-        io.emit('terminal_log', { type: 'error', message: `[System Error] ${err.message || 'Unknown network error.'}` });
+    targetBot.on('error', (err) => {
+        console.log(`Bot ${targetBot.username} Error:`, err.message);
+        io.emit('terminal_log', { type: 'error', message: `[System Error] ${targetBot.username}: ${err.message || 'Unknown network error.'}` });
     });
 }
 
 io.on('connection', (socket) => {
-    socket.emit('status', { connected: !!bot, text: bot ? 'Connected' : 'Disconnected' });
+    socket.emit('status', { connected: bots.length > 0, text: bots.length > 0 ? 'Connected' : 'Disconnected' });
 
     socket.on('toggle_reconnect', (val) => {
         autoReconnectEnabled = val;
@@ -289,7 +360,7 @@ io.on('connection', (socket) => {
 
     socket.on('bot_connect', (data) => {
         reconnectAttempts = 0; 
-        startBotInstance(data, socket);
+        startSwarm(data, socket);
     });
 
     socket.on('bot_disconnect', () => {
@@ -304,27 +375,24 @@ io.on('connection', (socket) => {
             countdownInterval = null;
         }
         
-        if (bot) {
-            bot.quit();
-            bot = null;
-        } else {
-            io.emit('status', { connected: false, text: 'Disconnected' });
-            io.emit('terminal_log', { type: 'info', message: '[System] Bot disconnected.' });
-        }
+        bots.forEach(b => b.quit());
+        bots = [];
+        io.emit('status', { connected: false, text: 'Disconnected' });
+        io.emit('terminal_log', { type: 'info', message: '[System] Swarm disconnected by user.' });
     });
 
     socket.on('bot_stop_loop', () => {
         isLooping = false;
         actionAttempts = 0;
         currentActiveCommand = null;
-        if (bot && bot.pathfinder) bot.pathfinder.setGoal(null);
+        bots.forEach(b => { if (b.pathfinder) b.pathfinder.setGoal(null); });
     });
 
     socket.on('bot_terminal_cmd', async (fullCommand) => {
         io.emit('terminal_log', { type: 'cmd', message: `> ${fullCommand}` });
 
         const args = fullCommand.trim().split(/\s+/);
-        const command = args[0].toLowerCase();
+        const command = args.toLowerCase();
         
         const commandSpecs = {
             'help': { min: 0, max: 0 },
@@ -376,17 +444,17 @@ io.on('connection', (socket) => {
         }
 
         if (command === 'help') {
-            io.emit('terminal_log', { type: 'help', message: 'mine (block_name) - Sets bot goal to mine setted block.' });
-            io.emit('terminal_log', { type: 'help', message: 'find (block_name) - Sets bot goal to walk to the setted block.' });
-            io.emit('terminal_log', { type: 'help', message: 'move (x) (y) (z) - Sets bot goal to walk to setted position.' });
-            io.emit('terminal_log', { type: 'help', message: 'drop (item_name) - Sets bot goal to drop the setted item.' });
-            io.emit('terminal_log', { type: 'help', message: 'kill (mob_name) - Sets bot goal to kill the setted mob.' });
-            io.emit('terminal_log', { type: 'help', message: 'stop - Resets bot goal.' });
+            io.emit('terminal_log', { type: 'help', message: 'mine (block_name) - Sets swarm goal to mine block.' });
+            io.emit('terminal_log', { type: 'help', message: 'find (block_name) - Sets swarm goal to walk to block.' });
+            io.emit('terminal_log', { type: 'help', message: 'move (x) (y) (z) - Sets swarm goal to walk to position.' });
+            io.emit('terminal_log', { type: 'help', message: 'drop (item_name) - Sets swarm goal to drop item.' });
+            io.emit('terminal_log', { type: 'help', message: 'kill (mob_name) - Sets swarm goal to kill mob.' });
+            io.emit('terminal_log', { type: 'help', message: 'stop - Resets swarm goals.' });
             return;
         }
 
-        if (!bot) {
-            io.emit('terminal_log', { type: 'error', message: '[Error] Bot is offline. Connect it first.' });
+        if (bots.length === 0) {
+            io.emit('terminal_log', { type: 'error', message: '[Error] Swarm is offline. Connect bots first.' });
             return;
         }
 
@@ -394,21 +462,21 @@ io.on('connection', (socket) => {
             isLooping = false;
             actionAttempts = 0;
             currentActiveCommand = null;
-            if (bot.pathfinder) bot.pathfinder.setGoal(null);
-            io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+            bots.forEach(b => { if (b.pathfinder) b.pathfinder.setGoal(null); });
+            io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
             return;
         }
 
-        // При вводе новой команды обнуляем попытки действий
         actionAttempts = 0;
         currentActiveCommand = fullCommand;
         isLooping = false;
         await sleep(250); 
         isLooping = true;
 
-        const mcData = require('minecraft-data')(bot.version);
+        // Берем версию под первого зашедшего бота
+        const mcData = require('minecraft-data')(bots[0].version);
 
-        while (isLooping && bot) {
+        while (isLooping && bots.length > 0) {
             try {
                 if (command === 'mine') {
                     const blockName = args.slice(1).join(' ').toLowerCase();
@@ -416,49 +484,45 @@ io.on('connection', (socket) => {
                     
                     if (!blockType) {
                         io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${blockName}.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+                        io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
                         isLooping = false;
                         break;
                     }
 
-                    const block = bot.findBlock({ matching: blockType.id, maxDistance: 32 });
-                    if (block) {
-                        const p = block.position;
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
-                        
-                        const defaultMovements = new Movements(bot, mcData);
-                        bot.pathfinder.setMovements(defaultMovements);
-                        await bot.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z));
-                        
-                        if (!isLooping) break;
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Mining ${blockName}.` });
-                        
-                        try {
-                            await bot.collectBlock.collect(block);
-                            actionAttempts = 0; // Обнуляем попытки при успешном сборе блока
-                        } catch (mineError) {
-                            actionAttempts++;
+                    // Синхронно отдаем приказ каждому живому боту в массиве
+                    for (const botInstance of bots) {
+                        const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
+                        if (block) {
+                            const p = block.position;
+                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
                             
-                            // Выводим оранжевое предупреждение о попытке ретрая (используем тип 'help' для оранжевого/светлого тона или кастомную обработку)
-                            io.emit('terminal_log', { type: 'help', message: `[Bot Error] Cannot mine ${blockName}. Retry attempt #${actionAttempts} of 5...` });
-                            
-                            if (actionAttempts >= 5) {
-                                io.emit('terminal_log', { type: 'error', message: `[Error] Failed to mine ${blockName} with 5 attempts!` });
-                                io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-                                isLooping = false;
-                                actionAttempts = 0;
-                                if (bot.pathfinder) bot.pathfinder.setGoal(null);
-                                break;
-                            } else {
-                                await sleep(2000); // Ожидание перед повторной попыткой действия
-                                continue;
+                            try {
+                                const defaultMovements = new Movements(botInstance, mcData);
+                                botInstance.pathfinder.setMovements(defaultMovements);
+                                await botInstance.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z));
+                                
+                                if (!isLooping) break;
+                                io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} mining ${blockName}.` });
+                                await botInstance.collectBlock.collect(block);
+                                actionAttempts = 0; 
+                            } catch (mineError) {
+                                actionAttempts++;
+                                io.emit('terminal_log', { type: 'help', message: `[Bot Error] ${botInstance.username} failed. Retry attempt #${actionAttempts} of 5...` });
+                                
+                                if (actionAttempts >= 5) {
+                                    io.emit('terminal_log', { type: 'error', message: `[Error] Swarm task failed after 5 attempts!` });
+                                    io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
+                                    isLooping = false;
+                                    actionAttempts = 0;
+                                    bots.forEach(b => { if (b.pathfinder) b.pathfinder.setGoal(null); });
+                                    break;
+                                } else {
+                                    await sleep(1000);
+                                }
                             }
+                        } else {
+                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} cannot find ${blockName} nearby.` });
                         }
-                    } else {
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${blockName}.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-                        isLooping = false;
-                        break;
                     }
 
                 } else if (command === 'find') {
@@ -467,109 +531,97 @@ io.on('connection', (socket) => {
 
                     if (!blockType) {
                         io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${blockName}.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+                        io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
                         isLooping = false;
                         break;
                     }
 
-                    const block = bot.findBlock({ matching: blockType.id, maxDistance: 32 });
-                    if (block) {
-                        const p = block.position;
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
-                        
-                        const defaultMovements = new Movements(bot, mcData);
-                        bot.pathfinder.setMovements(defaultMovements);
-                        await bot.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z));
-                        
-                        await sleep(2000);
-                    } else {
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${blockName}.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-                        isLooping = false;
-                        break;
+                    for (const botInstance of bots) {
+                        const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
+                        if (block) {
+                            const p = block.position;
+                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
+                            
+                            const defaultMovements = new Movements(botInstance, mcData);
+                            botInstance.pathfinder.setMovements(defaultMovements);
+                            botInstance.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z)).catch(() => {});
+                        }
                     }
+                    await sleep(4000);
 
                 } else if (command === 'move') {
                     const x = parseFloat(args[1]);
                     const y = parseFloat(args[2]);
                     const z = parseFloat(args[3]);
 
-                    io.emit('terminal_log', { type: 'info', message: `[Bot] Walking to ${x} ${y} ${z}.` });
+                    io.emit('terminal_log', { type: 'info', message: `[Bot] Swarm moving to target: ${x} ${y} ${z}.` });
                     
-                    const defaultMovements = new Movements(bot, mcData);
-                    bot.pathfinder.setMovements(defaultMovements);
-                    await bot.pathfinder.goto(new GoalBlock(x, y, z));
+                    // Все боты бегут маршем в одну точку
+                    for (const botInstance of bots) {
+                        try {
+                            const defaultMovements = new Movements(botInstance, mcData);
+                            botInstance.pathfinder.setMovements(defaultMovements);
+                            botInstance.pathfinder.goto(new GoalBlock(x, y, z)).catch(() => {});
+                        } catch (e) {}
+                    }
                     
                     isLooping = false;
-                    if (bot.pathfinder) bot.pathfinder.setGoal(null);
                     break;
-
-                } else if (command === 'drop') {
+                }
+                else if (command === 'drop') {
                     const itemName = args.slice(1).join(' ').toLowerCase();
-                    const item = bot.inventory.items().find(it => it.name === itemName);
+                    io.emit('terminal_log', { type: 'info', message: `[Bot] Swarm dropping all ${itemName}...` });
 
-                    if (item) {
-                        await bot.tossStack(item);
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Dropped ${itemName}.` });
-                        await sleep(1000);
-                    } else {
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${itemName} in inventory.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-                        isLooping = false;
-                        break;
+                    for (const botInstance of bots) {
+                        const item = botInstance.inventory.items().find(it => it.name === itemName);
+                        if (item) {
+                            await botInstance.tossStack(item);
+                        }
                     }
+                    await sleep(2000);
 
                 } else if (command === 'kill') {
                     const mobName = args.slice(1).join(' ').toLowerCase();
-                    const target = bot.nearestEntity((entity) => {
-                        return entity.name && entity.name.toLowerCase() === mobName && entity.username !== bot.username && entity.isValid; 
-                    });
 
-                    if (!target) {
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${mobName}.` });
-                        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
-                        isLooping = false;
-                        break;
-                    }
+                    for (const botInstance of bots) {
+                        const target = botInstance.nearestEntity((entity) => {
+                            return entity.name && entity.name.toLowerCase() === mobName && entity.username !== botInstance.username && entity.isValid; 
+                        });
 
-                    const weapon = bot.inventory.items().find(i => i.name.includes('sword') || i.name.includes('axe'));
-                    if (weapon) await bot.equip(weapon, 'hand');
+                        if (target) {
+                            const weapon = botInstance.inventory.items().find(i => i.name.includes('sword') || i.name.includes('axe'));
+                            if (weapon) await botInstance.equip(weapon, 'hand');
 
-                    const attackRange = mobName === 'enderman' ? 4.0 : 3.5;
-                    const defaultMovements = new Movements(bot, mcData);
-                    bot.pathfinder.setMovements(defaultMovements);
+                            const attackRange = mobName === 'enderman' ? 4.0 : 3.5;
+                            const defaultMovements = new Movements(botInstance, mcData);
+                            botInstance.pathfinder.setMovements(defaultMovements);
 
-                    const p = target.position;
-                    io.emit('terminal_log', { type: 'info', message: `[Bot] Walking to ${mobName} on ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}.` });
+                            const p = target.position;
+                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} hunting ${mobName} on ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}.` });
 
-                    while (target && target.isValid && bot.health > 0 && isLooping) {
-                        const distance = bot.entity.position.distanceTo(target.position);
-                        if (distance > attackRange) {
-                            bot.pathfinder.setGoal(new GoalFollow(target, 2), true);
-                            await sleep(100); 
-                        } else {
-                            bot.pathfinder.setGoal(null); 
-                            io.emit('terminal_log', { type: 'info', message: `[Bot] Killing ${mobName}.` });
-                            const eyeOffset = mobName === 'enderman' ? target.height - 0.2 : target.height / 2;
-                            await bot.lookAt(target.position.offset(0, eyeOffset, 0), true);
-                            bot.attack(target);
-                            await sleep(750); 
+                            while (target && target.isValid && botInstance.health > 0 && isLooping) {
+                                const distance = botInstance.entity.position.distanceTo(target.position);
+                                if (distance > attackRange) {
+                                    botInstance.pathfinder.setGoal(new GoalFollow(target, 2), true);
+                                    await sleep(100); 
+                                } else {
+                                    botInstance.pathfinder.setGoal(null); 
+                                    const eyeOffset = mobName === 'enderman' ? target.height - 0.2 : target.height / 2;
+                                    await botInstance.lookAt(target.position.offset(0, eyeOffset, 0), true);
+                                    botInstance.attack(target);
+                                    await sleep(750); 
+                                }
+                                await sleep(50);
+                            }
+                            if (botInstance.pathfinder) botInstance.pathfinder.setGoal(null);
                         }
-                        await sleep(50);
                     }
-                    
-                    if (!target.isValid && isLooping) {
-                        io.emit('terminal_log', { type: 'info', message: `[Bot] Killed ${mobName}.` });
-                    }
-                    if (bot.pathfinder) bot.pathfinder.setGoal(null);
                     await sleep(1000);
                 }
             } catch (err) {
-                console.log('Loop Error:', err.message);
-                io.emit('terminal_log', { type: 'error', message: `[Error] Internal bot failure: ${err.message}` });
-                io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+                console.log('Swarm Loop Error:', err.message);
+                io.emit('terminal_log', { type: 'error', message: `[Error] Swarm failure: ${err.message}` });
                 isLooping = false;
-                if (bot && bot.pathfinder) bot.pathfinder.setGoal(null);
                 break;
             }
             await sleep(100);
