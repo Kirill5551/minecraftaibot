@@ -14,7 +14,7 @@ let bot = null;
 let manualDisconnect = false; 
 let isLooping = false; 
 let autoReconnectEnabled = true;
-let reconnectAttempts = 0; // Счетчик попыток переподключения
+let reconnectAttempts = 0;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -90,7 +90,6 @@ app.get('/', (req, res) => {
                             <label for="reconnect" style="cursor:pointer; text-transform:none; font-size:0.9rem; color:var(--text-main);">Auto-reconnect</label>
                         </div>
                     </div>
-                    <!-- Строка 3: Кнопки навигации и Статус -->
                     <div class="status-line">
                         <button class="btn-danger" onclick="disconnectBot()">Disconnect</button>
                         <button onclick="connectBot()">Connect</button>
@@ -112,6 +111,10 @@ app.get('/', (req, res) => {
 
             <script>
                 const socket = io();
+                
+                const cmdHistory = [];
+                let historyIndex = -1;
+
                 function connectBot() {
                     const ip = document.getElementById('ip').value;
                     const port = parseInt(document.getElementById('port').value);
@@ -121,10 +124,37 @@ app.get('/', (req, res) => {
                 function disconnectBot() { socket.emit('bot_disconnect'); }
                 function toggleReconnect(val) { socket.emit('toggle_reconnect', val); }
 
-                document.getElementById('cmd').addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter' && this.value.trim() !== "") {
-                        socket.emit('bot_terminal_cmd', this.value.trim());
-                        this.value = "";
+                const cmdInput = document.getElementById('cmd');
+
+                cmdInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        const val = this.value.trim();
+                        if (val !== "") {
+                            socket.emit('bot_terminal_cmd', val);
+                            if (cmdHistory.length === 0 || cmdHistory[cmdHistory.length - 1] !== val) {
+                                cmdHistory.push(val);
+                            }
+                            historyIndex = cmdHistory.length;
+                            this.value = "";
+                        }
+                    } else if (e.key === 'ArrowUp') {
+                        if (cmdHistory.length > 0 && historyIndex > 0) {
+                            historyIndex--;
+                            this.value = cmdHistory[historyIndex];
+                            setTimeout(() => this.setSelectionRange(this.value.length, this.value.length), 0);
+                        } else if (historyIndex === 0) {
+                            this.value = cmdHistory[0];
+                        }
+                        e.preventDefault();
+                    } else if (e.key === 'ArrowDown') {
+                        if (historyIndex < cmdHistory.length - 1) {
+                            historyIndex++;
+                            this.value = cmdHistory[historyIndex];
+                        } else {
+                            historyIndex = cmdHistory.length;
+                            this.value = "";
+                        }
+                        e.preventDefault();
                     }
                 });
 
@@ -133,8 +163,8 @@ app.get('/', (req, res) => {
                     text.innerText = data.text;
                     if (data.connected) {
                         text.style.color = 'var(--success)';
-                    } else if (data.text.includes('Reconnect')) {
-                        text.style.color = 'var(--accent)';
+                    } else if (data.text.includes('Reconnect') || data.text.includes('Connecting')) {
+                        text.style.color = '#ff9800';
                     } else {
                         text.style.color = 'var(--danger)';
                     }
@@ -143,16 +173,20 @@ app.get('/', (req, res) => {
                 socket.on('terminal_log', data => {
                     const chatDiv = document.getElementById('chat');
                     let style = '';
-                    if (data.type === 'error') style = 'color: var(--danger); font-weight:600;';
-                    else if (data.type === 'help') style = 'color: #e2e8f0; font-style: italic;';
-                    else if (data.type === 'cmd') style = 'color: #ffffff; opacity: 0.6;';
-                    else style = 'color: #ffffff;';
+                    if (data.type === 'error') {
+                        style = 'color: var(--danger); font-weight:600;';
+                    } else if (data.type === 'help') {
+                        style = 'color: #e2e8f0; font-style: italic;';
+                    } else if (data.type === 'cmd') {
+                        style = 'color: #ffffff; font-weight: 500;';
+                    } else {
+                        style = 'color: #ffffff;';
+                    }
                     
                     chatDiv.innerHTML += '<div style="' + style + '">' + data.message + '</div>';
                     chatDiv.scrollTop = chatDiv.scrollHeight;
                 });
 
-                // Слушаем событие выключения чекбокса из бэкенда при превышении попыток
                 socket.on('disable_reconnect_checkbox', () => {
                     document.getElementById('reconnect').checked = false;
                 });
@@ -161,6 +195,90 @@ app.get('/', (req, res) => {
         </html>
     `);
 });
+let countdownInterval = null; 
+let actionAttempts = 0; // Счетчик попыток выполнения действия в игре
+let currentActiveCommand = null; // Хранение текущей запущенной команды для повторов
+
+process.on('uncaughtException', (err) => {
+    console.error('Intercepted crash:', err);
+    isLooping = false;
+    if (bot) {
+        if (bot.pathfinder) bot.pathfinder.setGoal(null);
+        io.emit('terminal_log', { type: 'error', message: `[Critical Error] Intercepted crash: ${err.message || 'Block interaction failed.'}` });
+        io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+    }
+});
+
+function startBotInstance(data, socket) {
+    if (bot) return;
+    
+    manualDisconnect = false;
+    io.emit('status', { connected: false, text: 'Connecting...' });
+
+    bot = mineflayer.createBot({
+        host: data.ip,
+        port: data.port,
+        username: data.username
+    });
+
+    bot.loadPlugin(collectBlock);
+    bot.loadPlugin(pathfinder);
+
+    bot.on('spawn', () => {
+        reconnectAttempts = 0; 
+        io.emit('status', { connected: true, text: 'Connected' });
+        io.emit('terminal_log', { type: 'info', message: '[System] Bot successfully joined the server.' });
+    });
+
+    bot.on('end', () => {
+        bot = null;
+        isLooping = false;
+        
+        if (manualDisconnect) {
+            io.emit('status', { connected: false, text: 'Disconnected' });
+            io.emit('terminal_log', { type: 'info', message: '[System] Bot disconnected.' });
+            return;
+        }
+
+        if (autoReconnectEnabled) {
+            reconnectAttempts++;
+            io.emit('terminal_log', { type: 'info', message: `[System] Connection lost. Reconnect attempt #${reconnectAttempts} of 5...` });
+
+            if (reconnectAttempts >= 5) {
+                reconnectAttempts = 0; 
+                io.emit('status', { connected: false, text: 'Disconnected' });
+                io.emit('terminal_log', { type: 'error', message: '[Error] Failed to reconnect with 5 attempts!' });
+            } else {
+                let timeLeft = 5;
+                io.emit('status', { connected: false, text: `Reconnect in ${timeLeft} seconds` });
+
+                if (countdownInterval) clearInterval(countdownInterval);
+
+                countdownInterval = setInterval(() => {
+                    timeLeft--;
+                    if (timeLeft > 0 && autoReconnectEnabled && !manualDisconnect && !bot) {
+                        io.emit('status', { connected: false, text: `Reconnect in ${timeLeft} seconds` });
+                    } else {
+                        clearInterval(countdownInterval);
+                        countdownInterval = null;
+                        if (autoReconnectEnabled && !manualDisconnect && !bot) {
+                            startBotInstance(data, socket);
+                        }
+                    }
+                }, 1000);
+            }
+        } else {
+            io.emit('status', { connected: false, text: 'Disconnected' });
+            io.emit('terminal_log', { type: 'info', message: '[System] Connection closed. Auto-reconnect is disabled.' });
+        }
+    });
+
+    bot.on('error', (err) => {
+        console.log('Bot Error:', err.message);
+        io.emit('terminal_log', { type: 'error', message: `[System Error] ${err.message || 'Unknown network error.'}` });
+    });
+}
+
 io.on('connection', (socket) => {
     socket.emit('status', { connected: !!bot, text: bot ? 'Connected' : 'Disconnected' });
 
@@ -170,77 +288,35 @@ io.on('connection', (socket) => {
     });
 
     socket.on('bot_connect', (data) => {
-        if (bot) return;
-        manualDisconnect = false;
-        io.emit('status', { connected: false, text: 'Connecting...' });
-
-        bot = mineflayer.createBot({
-            host: data.ip,
-            port: data.port,
-            username: data.username
-        });
-
-        bot.loadPlugin(collectBlock);
-        bot.loadPlugin(pathfinder);
-
-        bot.on('spawn', () => {
-            reconnectAttempts = 0;
-            io.emit('status', { connected: true, text: 'Connected' });
-            io.emit('terminal_log', { type: 'info', message: '[System] Bot successfully joined the server.' });
-        });
-
-        bot.on('end', () => {
-            bot = null;
-            isLooping = false;
-            
-            if (manualDisconnect) {
-                io.emit('status', { connected: false, text: 'Disconnected' });
-                io.emit('terminal_log', { type: 'info', message: '[System] Bot disconnected.' });
-                return;
-            }
-
-            if (autoReconnectEnabled) {
-                reconnectAttempts++;
-                io.emit('terminal_log', { type: 'info', message: `[System] Connection lost. Reconnect attempt #${reconnectAttempts} of 5...` });
-
-                if (reconnectAttempts >= 5) {
-                    autoReconnectEnabled = false;
-                    reconnectAttempts = 0;
-                    io.emit('status', { connected: false, text: 'Disconnected' });
-                    io.emit('terminal_log', { type: 'error', message: '[Error] Failed to reconnect with 5 attempts!' });
-                    socket.emit('disable_reconnect_checkbox');
-                } else {
-                    io.emit('status', { connected: false, text: 'Reconnect in 5 seconds' });
-                    setTimeout(() => {
-                        if (autoReconnectEnabled && !manualDisconnect && !bot) {
-                            socket.emit('bot_connect', data);
-                        }
-                    }, 5000);
-                }
-            } else {
-                io.emit('status', { connected: false, text: 'Disconnected' });
-                io.emit('terminal_log', { type: 'info', message: '[System] Connection closed. Auto-reconnect is disabled.' });
-            }
-        });
-
-        bot.on('error', (err) => {
-            console.log('Bot Error:', err.message);
-            io.emit('terminal_log', { type: 'error', message: `[System Error] ${err.message}` });
-        });
+        reconnectAttempts = 0; 
+        startBotInstance(data, socket);
     });
 
     socket.on('bot_disconnect', () => {
         isLooping = false;
         manualDisconnect = true;
         reconnectAttempts = 0;
+        actionAttempts = 0;
+        currentActiveCommand = null;
+        
+        if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = null;
+        }
+        
         if (bot) {
             bot.quit();
             bot = null;
+        } else {
+            io.emit('status', { connected: false, text: 'Disconnected' });
+            io.emit('terminal_log', { type: 'info', message: '[System] Bot disconnected.' });
         }
     });
 
     socket.on('bot_stop_loop', () => {
         isLooping = false;
+        actionAttempts = 0;
+        currentActiveCommand = null;
         if (bot && bot.pathfinder) bot.pathfinder.setGoal(null);
     });
 
@@ -316,10 +392,16 @@ io.on('connection', (socket) => {
 
         if (command === 'stop') {
             isLooping = false;
+            actionAttempts = 0;
+            currentActiveCommand = null;
             if (bot.pathfinder) bot.pathfinder.setGoal(null);
             io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
             return;
         }
+
+        // При вводе новой команды обнуляем попытки действий
+        actionAttempts = 0;
+        currentActiveCommand = fullCommand;
         isLooping = false;
         await sleep(250); 
         isLooping = true;
@@ -350,7 +432,28 @@ io.on('connection', (socket) => {
                         
                         if (!isLooping) break;
                         io.emit('terminal_log', { type: 'info', message: `[Bot] Mining ${blockName}.` });
-                        await bot.collectBlock.collect(block);
+                        
+                        try {
+                            await bot.collectBlock.collect(block);
+                            actionAttempts = 0; // Обнуляем попытки при успешном сборе блока
+                        } catch (mineError) {
+                            actionAttempts++;
+                            
+                            // Выводим оранжевое предупреждение о попытке ретрая (используем тип 'help' для оранжевого/светлого тона или кастомную обработку)
+                            io.emit('terminal_log', { type: 'help', message: `[Bot Error] Cannot mine ${blockName}. Retry attempt #${actionAttempts} of 5...` });
+                            
+                            if (actionAttempts >= 5) {
+                                io.emit('terminal_log', { type: 'error', message: `[Error] Failed to mine ${blockName} with 5 attempts!` });
+                                io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+                                isLooping = false;
+                                actionAttempts = 0;
+                                if (bot.pathfinder) bot.pathfinder.setGoal(null);
+                                break;
+                            } else {
+                                await sleep(2000); // Ожидание перед повторной попыткой действия
+                                continue;
+                            }
+                        }
                     } else {
                         io.emit('terminal_log', { type: 'info', message: `[Bot] Not found ${blockName}.` });
                         io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
@@ -463,13 +566,38 @@ io.on('connection', (socket) => {
                 }
             } catch (err) {
                 console.log('Loop Error:', err.message);
-                await sleep(1000);
+                io.emit('terminal_log', { type: 'error', message: `[Error] Internal bot failure: ${err.message}` });
+                io.emit('terminal_log', { type: 'info', message: '[Bot] Goal resetted.' });
+                isLooping = false;
+                if (bot && bot.pathfinder) bot.pathfinder.setGoal(null);
+                break;
             }
             await sleep(100);
         }
     });
 });
 
-http.listen(PORT, () => {
-    console.log(`Dashboard running on http://localhost:${PORT}`);
+function detectFreePort(startPort, callback) {
+    const net = require('net');
+    const server = net.createServer();
+
+    server.once('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            detectFreePort(startPort + 1, callback);
+        }
+    });
+
+    server.once('listening', () => {
+        server.close(() => {
+            callback(startPort);
+        });
+    });
+
+    server.listen(startPort);
+}
+
+detectFreePort(PORT, (freePort) => {
+    http.listen(freePort, () => {
+        console.log(`Dashboard running on http://localhost:${freePort}`);
+    });
 });
