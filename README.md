@@ -13,5 +13,6 @@ This is a Minecraft ai helper bot that can make a lot of things.
 
 ###   Setup Base-3 without using api key
 1. Download the Base-3
-2. Run dashboard.js<br>
-Note: Base-3 **can't analize messages from minecraft chat and don't have**
+2. Run dashboard.js
+
+<br>Note: Base-3 **can't analize messages from minecraft chat and don't have**
