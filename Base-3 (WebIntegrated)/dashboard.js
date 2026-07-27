@@ -104,14 +104,19 @@ app.get('/', (req, res) => {
                             <label for="reconnect" style="cursor:pointer; font-size:0.9rem;">Auto-reconnect</label>
                         </div>
                     </div>
-                    <!-- Строка 3: Кнопки, Статус и новый Чекбокс Задержки -->
+                    <!-- Строка 3: Кнопки, Статус и новый Селектор Задержки -->
                     <div class="status-line">
                         <button class="btn-danger" onclick="disconnectBot()">Disconnect</button>
                         <button onclick="connectBot()">Connect</button>
                         
-                        <div class="checkbox-group" id="delay-group" style="display: none; margin-left: 10px;">
-                            <input type="checkbox" id="delay_connect" checked>
-                            <label for="delay_connect" style="cursor:pointer; font-size:0.9rem; color:var(--text-main);">Delay (3000ms)</label>
+                        <div class="input-group" id="delay-group" style="display: none; margin-left: 10px; max-width: 160px;">
+                            <label>Spawn Delay</label>
+                            <select id="delay_connect">
+                                <option value="0">No Delay</option>
+                                <option value="3000">3000 ms</option>
+                                <option value="5000" selected>5000 ms</option>
+                                <option value="10000">10000 ms</option>
+                            </select>
                         </div>
 
                         <div style="margin-left: auto;">Status: <span id="status" style="font-weight: 600; color: var(--danger);">Disconnected</span></div>
@@ -164,9 +169,9 @@ app.get('/', (req, res) => {
                     const port = parseInt(document.getElementById('port').value);
                     const username = document.getElementById('username').value;
                     const count = parseInt(document.getElementById('bot_count').value) || 1;
-                    const delayEnabled = document.getElementById('delay_connect').checked;
+                    const delayValue = parseInt(document.getElementById('delay_connect').value) || 0;
 
-                    socket.emit('bot_connect', { mode, ip, port, username, count, delayEnabled });
+                    socket.emit('bot_connect', { mode, ip, port, username, count, delayValue });
                 }
 
                 function disconnectBot() { socket.emit('bot_disconnect'); }
@@ -207,7 +212,7 @@ app.get('/', (req, res) => {
                     const chatDiv = document.getElementById('chat');
                     let style = 'color: #ffffff;';
                     if (type === 'error') style = 'color: var(--danger); font-weight:600;';
-                    else if (type === 'help') style = 'color: #e2e8f0; font-style: italic;';
+                    else if (type === 'help') style = 'color: #ff9800; font-weight: 500; font-style: italic;';
                     else if (type === 'cmd') style = 'color: #ffffff; font-weight: 500;';
                     chatDiv.innerHTML += '<div style="' + style + '">' + msg + '</div>';
                     chatDiv.scrollTop = chatDiv.scrollHeight;
@@ -242,6 +247,7 @@ process.on('uncaughtException', (err) => {
     io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
 });
 
+// Каскадная функция запуска ботов (учитывает выбранное в селекторе время задержки)
 async function startSwarm(data, socket) {
     if (bots.length > 0) return;
     manualDisconnect = false;
@@ -286,9 +292,10 @@ async function startSwarm(data, socket) {
 
         await spawnPromise;
 
-        if (count > 1 && i < count - 1 && data.delayEnabled && !manualDisconnect) {
-            io.emit('terminal_log', { type: 'info', message: `[System] Waiting 3000ms before next spawn...` });
-            await sleep(3000);
+        // Применяем динамическую задержку, только если она больше 0 и ботов больше одного
+        if (count > 1 && i < count - 1 && data.delayValue > 0 && !manualDisconnect) {
+            io.emit('terminal_log', { type: 'info', message: `[System] Waiting ${data.delayValue}ms before next spawn...` });
+            await sleep(data.delayValue);
         }
     }
 
@@ -390,7 +397,7 @@ io.on('connection', (socket) => {
         io.emit('terminal_log', { type: 'cmd', message: `> ${fullCommand}` });
 
         const args = fullCommand.trim().split(/\s+/);
-        const command = args[0].toLowerCase();
+        const command = args.toLowerCase();
         
         const commandSpecs = {
             'help': { min: 0, max: 0 },
@@ -400,8 +407,8 @@ io.on('connection', (socket) => {
             'drop': { min: 1, max: 1 },
             'kill': { min: 1, max: 1 },
             'move': { min: 3, max: 3 },
-            'info': { min: 0, max: 1 }, // Добавлено: от 0 до 1 аргумента
-            'inv': { min: 0, max: 1 }   // Добавлено: от 0 до 1 аргумента
+            'info': { min: 0, max: 1 },
+            'inv': { min: 0, max: 1 }
         };
 
         if (!commandSpecs.hasOwnProperty(command)) {
@@ -479,7 +486,6 @@ io.on('connection', (socket) => {
 
         while (isLooping && bots.length > 0) {
             try {
-                // МГНОВЕННАЯ КОМАНДА: info [all | bot_name]
                 if (command === 'info') {
                     const targetTarget = args[1] ? args[1] : 'all';
                     let targetsList = [];
@@ -493,7 +499,6 @@ io.on('connection', (socket) => {
                     }
 
                     targetsList.forEach(botInstance => {
-                        // Округляем HP, так как Mineflayer отдает дробные значения (например, 19.45)
                         const hp = Math.round(botInstance.health);
                         const hunger = Math.round(botInstance.food);
                         io.emit('terminal_log', { type: 'info', message: `[${botInstance.username}] ${hp}/20 HP, ${hunger}/20 Hunger` });
@@ -502,7 +507,6 @@ io.on('connection', (socket) => {
                     isLooping = false;
                     break;
 
-                // МГНОВЕННАЯ КОМАНДА: inv [all | bot_name]
                 } else if (command === 'inv') {
                     const targetTarget = args[1] ? args[1] : 'all';
                     let targetsList = [];
@@ -520,7 +524,6 @@ io.on('connection', (socket) => {
                         io.emit('terminal_log', { type: 'info', message: `[${botInstance.username}] Inventory:` });
                         
                         let counter = 1;
-                        // Пробегаемся по реальным предметам в инвентаре
                         botInstance.inventory.items().forEach(item => {
                             io.emit('terminal_log', { type: 'info', message: `${counter} | ${item.name} x${item.count}` });
                             counter++;
@@ -530,7 +533,6 @@ io.on('connection', (socket) => {
                             io.emit('terminal_log', { type: 'info', message: '(empty)' });
                         }
 
-                        // Если выводим all, вставляем пустую строку между инвентарями ботов (кроме последнего)
                         if (targetTarget.toLowerCase() === 'all' && bIdx < targetsList.length - 1) {
                             io.emit('terminal_log', { type: 'info', message: '' });
                         }
@@ -550,40 +552,31 @@ io.on('connection', (socket) => {
                         break;
                     }
 
-                    for (const botInstance of bots) {
-                        const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
-                        if (block) {
-                            const p = block.position;
-                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
-                            
-                            try {
+                    // ЗАПУСКАЕМ ВСЕХ БОТОВ ПАРАЛЛЕЛЬНО (Убран блокирующий await)
+                    bots.forEach(async (botInstance) => {
+                        try {
+                            const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
+                            if (block) {
+                                const p = block.position;
+                                io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} walking to ${blockName} on ${p.x} ${p.y} ${p.z}.` });
+                                
                                 const defaultMovements = new Movements(botInstance, mcData);
                                 botInstance.pathfinder.setMovements(defaultMovements);
                                 await botInstance.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z));
                                 
-                                if (!isLooping) break;
+                                if (!isLooping) return;
                                 io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} mining ${blockName}.` });
                                 await botInstance.collectBlock.collect(block);
-                                actionAttempts = 0; 
-                            } catch (mineError) {
-                                actionAttempts++;
-                                io.emit('terminal_log', { type: 'help', message: `[Bot Error] ${botInstance.username} failed. Retry attempt #${actionAttempts} of 5...` });
-                                
-                                if (actionAttempts >= 5) {
-                                    io.emit('terminal_log', { type: 'error', message: `[Error] Swarm task failed after 5 attempts!` });
-                                    io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
-                                    isLooping = false;
-                                    actionAttempts = 0;
-                                    bots.forEach(b => { if (b.pathfinder) b.pathfinder.setGoal(null); });
-                                    break;
-                                } else {
-                                    await sleep(1000);
-                                }
+                            } else {
+                                io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} cannot find ${blockName} nearby.` });
                             }
-                        } else {
-                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} cannot find ${blockName} nearby.` });
+                        } catch (mineError) {
+                            io.emit('terminal_log', { type: 'help', message: `[Bot Error] ${botInstance.username} task failed: ${mineError.message || 'Error.'}` });
                         }
-                    }
+                    });
+
+                    // Ждем завершения итерации бесконечного цикла, чтобы боты копали в фоне
+                    await sleep(5000);
 
                 } else if (command === 'find') {
                     const blockName = args.slice(1).join(' ').toLowerCase();
@@ -596,7 +589,7 @@ io.on('connection', (socket) => {
                         break;
                     }
 
-                    for (const botInstance of bots) {
+                    bots.forEach((botInstance) => {
                         const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
                         if (block) {
                             const p = block.position;
@@ -606,7 +599,7 @@ io.on('connection', (socket) => {
                             botInstance.pathfinder.setMovements(defaultMovements);
                             botInstance.pathfinder.goto(new GoalGetToBlock(p.x, p.y, p.z)).catch(() => {});
                         }
-                    }
+                    });
                     await sleep(4000);
 
                 } else if (command === 'move') {
@@ -616,13 +609,13 @@ io.on('connection', (socket) => {
 
                     io.emit('terminal_log', { type: 'info', message: `[Bot] Swarm moving to target: ${x} ${y} ${z}.` });
                     
-                    for (const botInstance of bots) {
+                    bots.forEach((botInstance) => {
                         try {
                             const defaultMovements = new Movements(botInstance, mcData);
                             botInstance.pathfinder.setMovements(defaultMovements);
                             botInstance.pathfinder.goto(new GoalBlock(x, y, z)).catch(() => {});
                         } catch (e) {}
-                    }
+                    });
                     
                     isLooping = false;
                     break;
@@ -631,51 +624,65 @@ io.on('connection', (socket) => {
                     const itemName = args.slice(1).join(' ').toLowerCase();
                     io.emit('terminal_log', { type: 'info', message: `[Bot] Swarm dropping all ${itemName}...` });
 
-                    for (const botInstance of bots) {
+                    // Все выбрасывают вещи параллельно
+                    bots.forEach(async (botInstance) => {
                         const item = botInstance.inventory.items().find(it => it.name === itemName);
                         if (item) {
                             await botInstance.tossStack(item);
                         }
-                    }
+                    });
                     await sleep(2000);
 
                 } else if (command === 'kill') {
                     const mobName = args.slice(1).join(' ').toLowerCase();
 
-                    for (const botInstance of bots) {
-                        const target = botInstance.nearestEntity((entity) => {
-                            return entity.name && entity.name.toLowerCase() === mobName && entity.username !== botInstance.username && entity.isValid; 
-                        });
+                    // ОХОТА НАЧИНАЕТСЯ ОДНОВРЕМЕННО ДЛЯ ВСЕХ БОТОВ
+                    bots.forEach(async (botInstance) => {
+                        try {
+                            const target = botInstance.nearestEntity((entity) => {
+                                return entity.name && entity.name.toLowerCase() === mobName && entity.username !== botInstance.username && entity.isValid; 
+                            });
 
-                        if (target) {
-                            const weapon = botInstance.inventory.items().find(i => i.name.includes('sword') || i.name.includes('axe'));
-                            if (weapon) await botInstance.equip(weapon, 'hand');
+                            if (target) {
+                                const weapon = botInstance.inventory.items().find(i => i.name.includes('sword') || i.name.includes('axe'));
+                                if (weapon) await botInstance.equip(weapon, 'hand');
 
-                            const attackRange = mobName === 'enderman' ? 4.0 : 3.5;
-                            const defaultMovements = new Movements(botInstance, mcData);
-                            botInstance.pathfinder.setMovements(defaultMovements);
+                                const attackRange = mobName === 'enderman' ? 4.0 : 3.5;
+                                const defaultMovements = new Movements(botInstance, mcData);
+                                botInstance.pathfinder.setMovements(defaultMovements);
 
-                            const p = target.position;
-                            io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} hunting ${mobName} on ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}.` });
+                                const p = target.position;
+                                io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} hunting ${mobName} on ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}.` });
 
-                            while (target && target.isValid && botInstance.health > 0 && isLooping) {
-                                const distance = botInstance.entity.position.distanceTo(target.position);
-                                if (distance > attackRange) {
-                                    botInstance.pathfinder.setGoal(new GoalFollow(target, 2), true);
-                                    await sleep(100); 
-                                } else {
-                                    botInstance.pathfinder.setGoal(null); 
-                                    const eyeOffset = mobName === 'enderman' ? target.height - 0.2 : target.height / 2;
-                                    await botInstance.lookAt(target.position.offset(0, eyeOffset, 0), true);
-                                    botInstance.attack(target);
-                                    await sleep(750); 
-                        }
-                                await sleep(50);
+                                while (target && target.isValid && botInstance.health > 0 && isLooping) {
+                                    const distance = botInstance.entity.position.distanceTo(target.position);
+                                    if (distance > attackRange) {
+                                        botInstance.pathfinder.setGoal(new GoalFollow(target, 2), true);
+                                        await sleep(100); 
+                                    } else {
+                                        botInstance.pathfinder.setGoal(null); 
+                                        io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} killing ${mobName}.` });
+                                        const eyeOffset = mobName === 'enderman' ? target.height - 0.2 : target.height / 2;
+                                        await botInstance.lookAt(target.position.offset(0, eyeOffset, 0), true);
+                                        botInstance.attack(target);
+                                        await sleep(750); 
+                                    }
+                                    await sleep(50);
+                                }
+                                if (botInstance.pathfinder) botInstance.pathfinder.setGoal(null);
+                                if (!target.isValid && isLooping) {
+                                    io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} killed ${mobName}.` });
+                                }
+                            } else {
+                                io.emit('terminal_log', { type: 'info', message: `[Bot] ${botInstance.username} cannot find ${mobName} nearby.` });
                             }
+                        } catch (killError) {
                             if (botInstance.pathfinder) botInstance.pathfinder.setGoal(null);
                         }
-                    }
-                    await sleep(1000);
+                    });
+                    
+                    // Задержка на шаг боевого цикла в фоне
+                    await sleep(3000);
                 }
             } catch (err) {
                 console.log('Swarm Loop Error:', err.message);
