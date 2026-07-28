@@ -94,29 +94,24 @@ app.get('/', (req, res) => {
                         <div class="input-group" style="flex-grow: 1; max-width: 100px;"><label>Port</label><input type="number" id="port" value="25565"></div>
                         <div class="input-group" style="flex-grow: 2;"><label>Bot Username</label><input type="text" id="username" value="WebBot"></div>
                         
-                        <div class="input-group" id="count-group" style="display: none; flex-grow: 1; max-width: 100px;">
-                            <label>Bot Count</label>
-                            <input type="number" id="bot_count" value="3" min="1" max="100">
-                        </div>
-
                         <div class="checkbox-group">
                             <input type="checkbox" id="reconnect" checked onchange="toggleReconnect(this.checked)">
                             <label for="reconnect" style="cursor:pointer; font-size:0.9rem;">Auto-reconnect</label>
                         </div>
                     </div>
-                    <!-- Строка 3: Кнопки, Статус и новый Селектор Задержки -->
-                    <div class="status-line">
+                    <!-- Строка 3: Кнопки, Статус, а также перенесенные Bot Count и поле кастомной задержки -->
+                    <div class="status-line" style="flex-wrap: wrap; gap: 16px;">
                         <button class="btn-danger" onclick="disconnectBot()">Disconnect</button>
                         <button onclick="connectBot()">Connect</button>
                         
-                        <div class="input-group" id="delay-group" style="display: none; margin-left: 10px; max-width: 160px;">
-                            <label>Spawn Delay</label>
-                            <select id="delay_connect">
-                                <option value="0">No Delay</option>
-                                <option value="3000">3000 ms</option>
-                                <option value="5000" selected>5000 ms</option>
-                                <option value="10000">10000 ms</option>
-                            </select>
+                        <div class="input-group" id="count-group" style="display: none; max-width: 100px;">
+                            <label>Bot Count</label>
+                            <input type="number" id="bot_count" value="3" min="1" max="100">
+                        </div>
+
+                        <div class="input-group" id="delay-group" style="display: none; max-width: 140px;">
+                            <label>Spawn Delay (ms)</label>
+                            <input type="number" id="delay_connect" value="3000" min="0" step="500" placeholder="e.g. 3000">
                         </div>
 
                         <div style="margin-left: auto;">Status: <span id="status" style="font-weight: 600; color: var(--danger);">Disconnected</span></div>
@@ -247,7 +242,6 @@ process.on('uncaughtException', (err) => {
     io.emit('terminal_log', { type: 'info', message: '[Bot] Swarm goals resetted.' });
 });
 
-// Каскадная функция запуска ботов (учитывает выбранное в селекторе время задержки)
 async function startSwarm(data, socket) {
     if (bots.length > 0) return;
     manualDisconnect = false;
@@ -292,7 +286,6 @@ async function startSwarm(data, socket) {
 
         await spawnPromise;
 
-        // Применяем динамическую задержку, только если она больше 0 и ботов больше одного
         if (count > 1 && i < count - 1 && data.delayValue > 0 && !manualDisconnect) {
             io.emit('terminal_log', { type: 'info', message: `[System] Waiting ${data.delayValue}ms before next spawn...` });
             await sleep(data.delayValue);
@@ -397,7 +390,7 @@ io.on('connection', (socket) => {
         io.emit('terminal_log', { type: 'cmd', message: `> ${fullCommand}` });
 
         const args = fullCommand.trim().split(/\s+/);
-        const command = args.toLowerCase();
+        const command = args[0].toLowerCase();
         
         const commandSpecs = {
             'help': { min: 0, max: 0 },
@@ -408,7 +401,8 @@ io.on('connection', (socket) => {
             'kill': { min: 1, max: 1 },
             'move': { min: 3, max: 3 },
             'info': { min: 0, max: 1 },
-            'inv': { min: 0, max: 1 }
+            'inv': { min: 0, max: 1 },
+            'chat': { min: 1, max: 99 } // Добавлено: команда чата принимает много аргументов
         };
 
         if (!commandSpecs.hasOwnProperty(command)) {
@@ -456,6 +450,7 @@ io.on('connection', (socket) => {
             io.emit('terminal_log', { type: 'help', message: 'move (x) (y) (z) - Sets swarm goal to walk to position.' });
             io.emit('terminal_log', { type: 'help', message: 'drop (item_name) - Sets swarm goal to drop item.' });
             io.emit('terminal_log', { type: 'help', message: 'kill (mob_name) - Sets swarm goal to kill mob.' });
+            io.emit('terminal_log', { type: 'help', message: 'chat (text) - Sends chat message from all bots to the game.' });
             io.emit('terminal_log', { type: 'help', message: 'info [bot_name|all] - Shows bots HP and Hunger stats.' });
             io.emit('terminal_log', { type: 'help', message: 'inv [bot_name|all] - Shows bots inventory contents.' });
             io.emit('terminal_log', { type: 'help', message: 'stop - Resets swarm goals.' });
@@ -486,7 +481,21 @@ io.on('connection', (socket) => {
 
         while (isLooping && bots.length > 0) {
             try {
-                if (command === 'info') {
+                // КОМАНДА: chat [сообщение / команда авторизации]
+                if (command === 'chat') {
+                    const chatMessage = args.slice(1).join(' ');
+                    io.emit('terminal_log', { type: 'info', message: `[System] Swarm sending chat message: "${chatMessage}"` });
+                    
+                    // Каждый бот из массива отправляет это сообщение в игру параллельно
+                    bots.forEach(botInstance => {
+                        botInstance.chat(chatMessage);
+                    });
+
+                    isLooping = false;
+                    break;
+
+                } else if (command === 'info') {
+                    // ИСПРАВЛЕНО: Безопасный тернарный оператор предотвращает краш, если аргумент не введен
                     const targetTarget = args[1] ? args[1] : 'all';
                     let targetsList = [];
 
@@ -495,7 +504,7 @@ io.on('connection', (socket) => {
                     } else {
                         const singleBot = bots.find(b => b.username.toLowerCase() === targetTarget.toLowerCase());
                         if (singleBot) targetsList.push(singleBot);
-                        else io.emit('terminal_log', { type: 'error', message: `[Error] Bot with name "${args[1]}" not found in swarm.` });
+                        else io.emit('terminal_log', { type: 'error', message: `[Error] Bot with name "${targetTarget}" not found in swarm.` });
                     }
 
                     targetsList.forEach(botInstance => {
@@ -516,7 +525,7 @@ io.on('connection', (socket) => {
                     } else {
                         const singleBot = bots.find(b => b.username.toLowerCase() === targetTarget.toLowerCase());
                         if (singleBot) targetsList.push(singleBot);
-                        else io.emit('terminal_log', { type: 'error', message: `[Error] Bot with name "${args[1]}" not found in swarm.` });
+                        else io.emit('terminal_log', { type: 'error', message: `[Error] Bot with name "${targetTarget}" not found in swarm.` });
                     }
 
                     for (let bIdx = 0; bIdx < targetsList.length; bIdx++) {
@@ -552,7 +561,6 @@ io.on('connection', (socket) => {
                         break;
                     }
 
-                    // ЗАПУСКАЕМ ВСЕХ БОТОВ ПАРАЛЛЕЛЬНО (Убран блокирующий await)
                     bots.forEach(async (botInstance) => {
                         try {
                             const block = botInstance.findBlock({ matching: blockType.id, maxDistance: 32 });
@@ -575,7 +583,6 @@ io.on('connection', (socket) => {
                         }
                     });
 
-                    // Ждем завершения итерации бесконечного цикла, чтобы боты копали в фоне
                     await sleep(5000);
 
                 } else if (command === 'find') {
@@ -619,12 +626,10 @@ io.on('connection', (socket) => {
                     
                     isLooping = false;
                     break;
-                }
-                else if (command === 'drop') {
+                }                else if (command === 'drop') {
                     const itemName = args.slice(1).join(' ').toLowerCase();
                     io.emit('terminal_log', { type: 'info', message: `[Bot] Swarm dropping all ${itemName}...` });
 
-                    // Все выбрасывают вещи параллельно
                     bots.forEach(async (botInstance) => {
                         const item = botInstance.inventory.items().find(it => it.name === itemName);
                         if (item) {
@@ -636,7 +641,6 @@ io.on('connection', (socket) => {
                 } else if (command === 'kill') {
                     const mobName = args.slice(1).join(' ').toLowerCase();
 
-                    // ОХОТА НАЧИНАЕТСЯ ОДНОВРЕМЕННО ДЛЯ ВСЕХ БОТОВ
                     bots.forEach(async (botInstance) => {
                         try {
                             const target = botInstance.nearestEntity((entity) => {
@@ -681,7 +685,6 @@ io.on('connection', (socket) => {
                         }
                     });
                     
-                    // Задержка на шаг боевого цикла в фоне
                     await sleep(3000);
                 }
             } catch (err) {
